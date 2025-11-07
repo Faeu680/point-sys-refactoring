@@ -128,6 +128,9 @@ export class DatabaseManager {
   private seedData(): void {
     console.log('Inserindo dados iniciais...');
 
+    // Hash da senha "password" para todos os usuários padrão
+    const passwordHash = '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi';
+
     const institutionsSQL = `
       INSERT OR IGNORE INTO institutions (name, address) VALUES 
       ('Universidade Federal de Tecnologia', 'Rua da Universidade, 123'),
@@ -137,7 +140,9 @@ export class DatabaseManager {
 
     const usersSQL = `
       INSERT OR IGNORE INTO users (email, password, type) VALUES 
-      ('admin@test.com', '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'admin');
+      ('admin@test.com', '${passwordHash}', 'admin'),
+      ('aluno@test.com', '${passwordHash}', 'student'),
+      ('empresa@test.com', '${passwordHash}', 'company');
     `;
 
     this.db.exec(institutionsSQL, (err) => {
@@ -150,10 +155,57 @@ export class DatabaseManager {
 
     this.db.exec(usersSQL, (err) => {
       if (err) {
-        console.error('Erro ao inserir usuário admin:', err);
+        console.error('Erro ao inserir usuários:', err);
       } else {
-        console.log('Dados iniciais inseridos!');
+        console.log('Usuários padrão inseridos!');
+        // Criar dados do aluno e empresa após os usuários serem criados
+        this.createDefaultStudentAndCompany();
       }
+    });
+  }
+
+  private createDefaultStudentAndCompany(): void {
+    // Buscar IDs dos usuários criados
+    this.db.get("SELECT id FROM users WHERE email = 'aluno@test.com'", (err, studentUser: any) => {
+      if (err || !studentUser) {
+        console.error('Erro ao buscar usuário aluno:', err);
+        return;
+      }
+
+      // Criar aluno padrão
+      const studentSQL = `
+        INSERT OR IGNORE INTO students (user_id, name, cpf, rg, address, institution_id, course)
+        VALUES (?, 'João Silva', '12345678901', '1234567', 'Rua dos Alunos, 100', 1, 'Engenharia de Software')
+      `;
+      
+      this.db.run(studentSQL, [studentUser.id], (err) => {
+        if (err) {
+          console.error('Erro ao inserir aluno padrão:', err);
+        } else {
+          console.log('Aluno padrão criado com sucesso!');
+        }
+      });
+    });
+
+    this.db.get("SELECT id FROM users WHERE email = 'empresa@test.com'", (err, companyUser: any) => {
+      if (err || !companyUser) {
+        console.error('Erro ao buscar usuário empresa:', err);
+        return;
+      }
+
+      // Criar empresa padrão
+      const companySQL = `
+        INSERT OR IGNORE INTO companies (user_id, name, cnpj, description, address, phone, email, website, is_active)
+        VALUES (?, 'Empresa Parceira Exemplo', '12345678000190', 'Empresa parceira para demonstração do sistema', 'Av. Empresarial, 500', '(11) 99999-9999', 'empresa@test.com', 'https://empresa-exemplo.com', 1)
+      `;
+      
+      this.db.run(companySQL, [companyUser.id], (err) => {
+        if (err) {
+          console.error('Erro ao inserir empresa padrão:', err);
+        } else {
+          console.log('Empresa padrão criada com sucesso!');
+        }
+      });
     });
   }
 

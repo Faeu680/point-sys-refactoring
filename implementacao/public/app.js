@@ -12,25 +12,123 @@ class PointSystem {
         this.currentCompanyId = null;
         this.currentAdvantageId = null;
         this.deleteCallback = null;
-        this.authToken = null; // Token de autenticação
+        this.authToken = localStorage.getItem('authToken');
+        this.currentUser = JSON.parse(localStorage.getItem('currentUser') || 'null');
         
         this.init();
     }
 
     init() {
         this.setupEventListeners();
-        this.setupTabNavigation();
         
-        // Show initial loading
-        this.showLoading('Inicializando sistema...');
+        // Verificar se há usuário logado
+        if (this.authToken && this.currentUser) {
+            this.showMainApp();
+        } else {
+            this.showLoginScreen();
+        }
+    }
+
+    showLoginScreen() {
+        document.getElementById('loginScreen').style.display = 'flex';
+        document.getElementById('mainApp').style.display = 'none';
+    }
+
+    showMainApp() {
+        document.getElementById('loginScreen').style.display = 'none';
+        document.getElementById('mainApp').style.display = 'block';
         
-        setTimeout(() => {
+        this.setupUserInterface();
+        this.loadUserData();
+    }
+
+    setupUserInterface() {
+        if (!this.currentUser) return;
+
+        const userType = this.currentUser.type;
+        const userEmail = this.currentUser.email;
+        
+        // Atualizar mensagem de boas-vindas
+        const welcomeText = document.getElementById('userWelcome');
+        if (welcomeText) {
+            welcomeText.textContent = `Bem-vindo, ${userEmail} (${this.getUserTypeLabel(userType)})`;
+        }
+
+        // Esconder todas as navegações
+        document.getElementById('adminNav').style.display = 'none';
+        document.getElementById('studentNav').style.display = 'none';
+        document.getElementById('companyNav').style.display = 'none';
+
+        // Esconder todas as seções
+        document.querySelectorAll('.content-section').forEach(section => {
+            section.style.display = 'none';
+        });
+
+        // Mostrar navegação e seção apropriada
+        if (userType === 'admin') {
+            document.getElementById('adminNav').style.display = 'flex';
+            document.getElementById('admin-students').style.display = 'block';
+            this.setupTabNavigation();
+        } else if (userType === 'student') {
+            document.getElementById('studentNav').style.display = 'flex';
+            document.getElementById('student-advantages').style.display = 'block';
+            this.setupTabNavigation();
+        } else if (userType === 'company') {
+            document.getElementById('companyNav').style.display = 'flex';
+            document.getElementById('company-advantages').style.display = 'block';
+            this.setupTabNavigation();
+        }
+    }
+
+    getUserTypeLabel(type) {
+        const labels = {
+            'admin': 'Administrador',
+            'student': 'Aluno',
+            'company': 'Empresa Parceira'
+        };
+        return labels[type] || type;
+    }
+
+    loadUserData() {
+        if (!this.currentUser) return;
+
+        const userType = this.currentUser.type;
+        
+        if (userType === 'admin') {
             this.loadStudents();
             this.loadCompanies();
-            this.loadAdvantages();
+        } else if (userType === 'student') {
             this.loadStudentAdvantages();
-            this.hideLoading();
-        }, 1000);
+        } else if (userType === 'company') {
+            this.loadAdvantages();
+        }
+    }
+
+    async login(email, password) {
+        try {
+            const response = await this.makeRequest('/auth/login', 'POST', { email, password }, false);
+            
+            this.authToken = response.token;
+            this.currentUser = response.user;
+            
+            localStorage.setItem('authToken', this.authToken);
+            localStorage.setItem('currentUser', JSON.stringify(this.currentUser));
+            
+            this.showMainApp();
+            this.showToast('Login realizado com sucesso!', 'success');
+        } catch (error) {
+            this.showToast('Erro ao fazer login. Verifique suas credenciais.', 'error');
+            throw error;
+        }
+    }
+
+    logout() {
+        this.authToken = null;
+        this.currentUser = null;
+        localStorage.removeItem('authToken');
+        localStorage.removeItem('currentUser');
+        this.showLoginScreen();
+        this.showToast('Logout realizado com sucesso!', 'success');
     }
 
     setupEventListeners() {
@@ -58,19 +156,11 @@ class PointSystem {
 
     setupTabNavigation() {
         const tabs = document.querySelectorAll('.nav-tab');
-        const sections = document.querySelectorAll('.content-section');
-
+        
         tabs.forEach(tab => {
             tab.addEventListener('click', () => {
                 const targetTab = tab.dataset.tab;
-                
-                // Remove active class from all tabs and sections
-                tabs.forEach(t => t.classList.remove('active'));
-                sections.forEach(s => s.classList.remove('active'));
-                
-                // Add active class to clicked tab and corresponding section
-                tab.classList.add('active');
-                document.getElementById(targetTab).classList.add('active');
+                this.switchTab(targetTab);
             });
         });
     }
@@ -441,7 +531,14 @@ class PointSystem {
                 is_active: advantageData.is_active
             };
             
-            const response = await this.makeRequest('/advantages/demo', 'POST', advantagePayload, false);
+            // Tentar usar rota autenticada primeiro
+            let response;
+            try {
+                response = await this.makeRequest('/advantages', 'POST', advantagePayload, true);
+            } catch (error) {
+                // Se falhar, usar rota demo
+                response = await this.makeRequest('/advantages/demo', 'POST', advantagePayload, false);
+            }
             console.log('Advantage created:', response);
             
             await this.loadAdvantages();
@@ -466,7 +563,13 @@ class PointSystem {
                 is_active: advantageData.is_active
             };
             
-            await this.makeRequest(`/advantages/demo/${id}`, 'PUT', advantagePayload, false);
+            // Tentar usar rota autenticada primeiro
+            try {
+                await this.makeRequest(`/advantages/${id}`, 'PUT', advantagePayload, true);
+            } catch (error) {
+                // Se falhar, usar rota demo
+                await this.makeRequest(`/advantages/demo/${id}`, 'PUT', advantagePayload, false);
+            }
             
             await this.loadAdvantages();
             this.hideLoading();
@@ -482,7 +585,13 @@ class PointSystem {
         this.showLoading('Removendo vantagem...');
         
         try {
-            await this.makeRequest(`/advantages/demo/${id}`, 'DELETE', null, false);
+            // Tentar usar rota autenticada primeiro
+            try {
+                await this.makeRequest(`/advantages/${id}`, 'DELETE', null, true);
+            } catch (error) {
+                // Se falhar, usar rota demo
+                await this.makeRequest(`/advantages/demo/${id}`, 'DELETE', null, false);
+            }
             
             const index = this.advantages.findIndex(a => a.id === id);
             if (index !== -1) {
@@ -512,9 +621,16 @@ class PointSystem {
         `;
 
         try {
-            // Para demonstração, vamos usar a rota pública que lista todas as vantagens ativas
-            // Em produção, deveria usar /advantages/company/my-advantages com autenticação
-            const {advantages} = await this.makeRequest('/advantages');
+            // Tentar usar rota autenticada primeiro, se falhar usar rota demo
+            let advantages = [];
+            try {
+                const response = await this.makeRequest('/advantages/company/my-advantages', 'GET', null, true);
+                advantages = response.advantages || [];
+            } catch (error) {
+                // Se falhar, usar rota pública (para demonstração)
+                const response = await this.makeRequest('/advantages');
+                advantages = response.advantages || [];
+            }
             this.advantages = advantages;
 
             setTimeout(() => {
@@ -576,7 +692,13 @@ class PointSystem {
         this.showLoading('Alterando status da vantagem...');
         
         try {
-            await this.makeRequest(`/advantages/demo/${id}/toggle`, 'PUT', null, false);
+            // Tentar usar rota autenticada primeiro
+            try {
+                await this.makeRequest(`/advantages/${id}/toggle`, 'PUT', null, true);
+            } catch (error) {
+                // Se falhar, usar rota demo
+                await this.makeRequest(`/advantages/demo/${id}/toggle`, 'PUT', null, false);
+            }
             
             await this.loadAdvantages();
             this.hideLoading();
@@ -875,50 +997,37 @@ class PointSystem {
 
     // Tab Management
     switchTab(tabName) {
-        // Hide current content immediately
-        const currentSection = document.querySelector('.content-section.active');
-        if (currentSection) {
-            currentSection.style.opacity = '0';
-            currentSection.style.visibility = 'hidden';
+        // Remove active class from all tabs
+        document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
+        
+        // Hide all sections
+        document.querySelectorAll('.content-section').forEach(section => {
+            section.style.display = 'none';
+            section.classList.remove('active');
+        });
+        
+        // Show selected tab and section
+        const selectedTab = document.querySelector(`[data-tab="${tabName}"]`);
+        if (selectedTab) {
+            selectedTab.classList.add('active');
         }
         
-            // Show loading for tab switch
-        const tabNames = {
-            'students': 'alunos',
-            'companies': 'empresas',
-            'company-advantages': 'vantagens',
-            'student-advantages': 'vantagens disponíveis'
-        };
-        this.showLoading(`Carregando ${tabNames[tabName] || tabName}...`);
-        
-        setTimeout(() => {
-            // Remove active class from all tabs and sections
-            document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
-            document.querySelectorAll('.content-section').forEach(section => {
-                section.classList.remove('active');
-                section.style.opacity = '0';
-                section.style.visibility = 'hidden';
-            });
-            
-            // Add active class to selected tab and section
-            document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
-            const targetSection = document.getElementById(tabName);
+        const targetSection = document.getElementById(tabName);
+        if (targetSection) {
+            targetSection.style.display = 'block';
             targetSection.classList.add('active');
-            
-            // Load data if needed
-            if (tabName === 'company-advantages') {
-                this.loadAdvantages();
-            } else if (tabName === 'student-advantages') {
-                this.loadStudentAdvantages();
-            }
-            
-            // Show content with fade in effect
-            setTimeout(() => {
-                targetSection.style.visibility = 'visible';
-                targetSection.style.opacity = '1';
-                this.hideLoading();
-            }, 200);
-        }, 500);
+        }
+        
+        // Load data if needed
+        if (tabName === 'company-advantages') {
+            this.loadAdvantages();
+        } else if (tabName === 'student-advantages') {
+            this.loadStudentAdvantages();
+        } else if (tabName === 'admin-students') {
+            this.loadStudents();
+        } else if (tabName === 'admin-companies') {
+            this.loadCompanies();
+        }
     }
 }
 
@@ -926,6 +1035,19 @@ class PointSystem {
 const app = new PointSystem();
 
 // Global functions for HTML onclick events
+function handleLogin(event) {
+    event.preventDefault();
+    const email = document.getElementById('loginEmail').value;
+    const password = document.getElementById('loginPassword').value;
+    app.login(email, password).catch(() => {
+        // Error already handled in login method
+    });
+}
+
+function handleLogout() {
+    app.logout();
+}
+
 function openStudentModal() {
     app.openStudentModal();
 }
