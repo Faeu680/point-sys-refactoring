@@ -116,93 +116,83 @@ export class TransactionController {
     }
   }
 
-  // PROFESSOR - Listar alunos que receberam moedas e seus resgates
   public async getStudentsWithRedemptions(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const professorId = req.user.id;
-
       if (req.user.type !== 'professor') {
         res.status(403).json({ error: 'Apenas professores podem visualizar esta informação' });
         return;
       }
 
-      // Buscar todas as transações enviadas pelo professor
+      const professorId = req.user.id;
       const allTransactions = await this.transactionModel.findByUserId(professorId);
       const sentTransactions = allTransactions.filter(
         tx => tx.from_user_id === professorId && tx.transaction_type === 'transfer'
       );
 
-      // Agrupar por aluno e buscar informações
-      const studentMap = new Map<number, {
-        student: any;
-        transactions: any[];
-        redemptions: any[];
-        totalReceived: number;
-      }>();
+      const studentIds = [...new Set(sentTransactions
+        .map(tx => tx.to_user_id)
+        .filter((id): id is number => id !== undefined))];
 
-      for (const transaction of sentTransactions) {
-        if (!transaction.to_user_id) continue;
+      const studentsData = await Promise.all(
+        studentIds.map(async (userId) => {
+          const user = await this.userModel.findById(userId);
+          if (!user || user.type !== 'student') return null;
 
-        const toUser = await this.userModel.findById(transaction.to_user_id);
-        if (!toUser || toUser.type !== 'student') continue;
+          const student = await this.studentModel.findByUserId(userId);
+          if (!student) return null;
 
-        const student = await this.studentModel.findByUserId(toUser.id);
-        if (!student) continue;
+          const studentTransactions = sentTransactions.filter(tx => tx.to_user_id === userId);
+          const redemptions = await this.redemptionModel.findByStudentId(student.id);
+          const enrichedRedemptions = await this.enrichRedemptions(redemptions);
 
-        if (!studentMap.has(student.id)) {
-          studentMap.set(student.id, {
+          return {
             student: {
               id: student.id,
               name: student.name,
-              email: toUser.email,
+              email: user.email,
               course: student.course,
               institution_name: (student as any).institution_name
             },
-            transactions: [],
-            redemptions: [],
-            totalReceived: 0
-          });
-        }
+            transactions: studentTransactions.map(tx => ({
+              id: tx.id,
+              amount: tx.amount,
+              reason: tx.reason,
+              created_at: tx.created_at
+            })),
+            redemptions: enrichedRedemptions,
+            totalReceived: studentTransactions.reduce((sum, tx) => sum + tx.amount, 0)
+          };
+        })
+      );
 
-        const studentData = studentMap.get(student.id)!;
-        studentData.transactions.push({
-          id: transaction.id,
-          amount: transaction.amount,
-          reason: transaction.reason,
-          created_at: transaction.created_at
-        });
-        studentData.totalReceived += transaction.amount;
-
-        // Buscar resgates do aluno
-        const redemptions = await this.redemptionModel.findByStudentId(student.id);
-        for (const redemption of redemptions) {
-          const advantage = await this.advantageModel.findById(redemption.advantage_id);
-          if (!advantage) continue;
-
-          const company = await this.companyModel.findById(advantage.company_id);
-          studentData.redemptions.push({
-            id: redemption.id,
-            redemption_code: redemption.redemption_code,
-            status: redemption.status,
-            created_at: redemption.created_at,
-            advantage: {
-              id: advantage.id,
-              title: advantage.title,
-              cost_coins: advantage.cost_coins
-            },
-            company: company ? {
-              id: company.id,
-              name: company.name
-            } : null
-          });
-        }
-      }
-
-      const result = Array.from(studentMap.values());
+      const result = studentsData.filter((data): data is NonNullable<typeof data> => data !== null);
       res.json({ students: result });
     } catch (error) {
       console.error('Erro ao buscar alunos com resgates:', error);
       res.status(500).json({ error: 'Erro interno do servidor' });
     }
+  }
+
+  private async enrichRedemptions(redemptions: any[]): Promise<any[]> {
+    return Promise.all(
+      redemptions.map(async (redemption) => {
+        const advantage = await this.advantageModel.findById(redemption.advantage_id);
+        if (!advantage) return null;
+
+        const company = await this.companyModel.findById(advantage.company_id);
+        return {
+          id: redemption.id,
+          redemption_code: redemption.redemption_code,
+          status: redemption.status,
+          created_at: redemption.created_at,
+          advantage: {
+            id: advantage.id,
+            title: advantage.title,
+            cost_coins: advantage.cost_coins
+          },
+          company: company ? { id: company.id, name: company.name } : null
+        };
+      })
+    ).then(results => results.filter((r): r is NonNullable<typeof r> => r !== null));
   }
 }

@@ -5,59 +5,48 @@ import bcrypt from 'bcryptjs';
 import { cpf as CPF } from 'cpf-cnpj-validator';
 
 export class StudentController {
-  private studentModel = new Student();
+  private studentModel = new Student();s
   private userModel = new User();
 
-  // CREATE - Criar novo aluno
   public async create(req: Request, res: Response): Promise<void> {
     try {
+      const validationError = this.validateCreateRequest(req.body);
+      if (validationError) {
+        res.status(400).json({ error: validationError });
+        return;
+      }
+
       const { name, email, password, cpf, rg, address, institution_id, course } = req.body;
 
-      // Validações
-      if (!name || !email || !password || !cpf || !institution_id) {
-        res.status(400).json({ error: 'Campos obrigatórios: name, email, password, cpf, institution_id' });
-        return;
-      }
+      const [existingUser, existingStudent] = await Promise.all([
+        this.userModel.findByEmail(email),
+        this.studentModel.findByCpf(cpf)
+      ]);
 
-      // Validar CPF
-      if (!CPF.isValid(cpf)) {
-        res.status(400).json({ error: 'CPF inválido' });
-        return;
-      }
-
-      // Verificar se email já existe
-      const existingUser = await this.userModel.findByEmail(email);
       if (existingUser) {
         res.status(400).json({ error: 'Email já cadastrado' });
         return;
       }
 
-      // Verificar se CPF já existe
-      const existingStudent = await this.studentModel.findByCpf(cpf);
       if (existingStudent) {
         res.status(400).json({ error: 'CPF já cadastrado' });
         return;
       }
 
-      // Hash da senha
       const hashedPassword = await bcrypt.hash(password, 10);
-
-      // Criar usuário
-      const userData = {
+      const user = await this.userModel.create({
         email,
         password: hashedPassword,
         type: 'student' as const,
         is_active: true
-      };
+      });
 
-      const user = await this.userModel.create(userData);
-
-      if (!user || !user.id) {
+      if (!user?.id) {
         res.status(500).json({ error: 'Erro ao criar usuário' });
         return;
       }
 
-      const studentData = {
+      const student = await this.studentModel.create({
         user_id: user.id,
         name,
         cpf,
@@ -65,9 +54,7 @@ export class StudentController {
         address,
         institution_id,
         course
-      };
-
-      const student = await this.studentModel.create(studentData);
+      });
 
       res.status(201).json({
         message: 'Aluno criado com sucesso',
@@ -87,6 +74,21 @@ export class StudentController {
       console.error('Erro ao criar aluno:', error);
       res.status(500).json({ error: 'Erro interno do servidor' });
     }
+  }
+
+  private validateCreateRequest(body: any): string | null {
+    const requiredFields = ['name', 'email', 'password', 'cpf', 'institution_id'];
+    const missingFields = requiredFields.filter(field => !body[field]);
+    
+    if (missingFields.length > 0) {
+      return `Campos obrigatórios: ${requiredFields.join(', ')}`;
+    }
+
+    if (!CPF.isValid(body.cpf)) {
+      return 'CPF inválido';
+    }
+
+    return null;
   }
 
   // READ - Listar todos os alunos

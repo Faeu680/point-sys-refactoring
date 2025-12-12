@@ -110,12 +110,9 @@ export class AdvantageController {
     }
   }
 
-  // STUDENT - Resgatar vantagem
   public async redeem(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const { id } = req.params;
-      const advantageId = parseInt(id);
-
+      const advantageId = parseInt(req.params.id);
       if (isNaN(advantageId)) {
         res.status(400).json({ error: 'ID inválido' });
         return;
@@ -126,7 +123,11 @@ export class AdvantageController {
         return;
       }
 
-      const advantage = await this.advantageModel.findById(advantageId);
+      const [advantage, student] = await Promise.all([
+        this.advantageModel.findById(advantageId),
+        this.studentModel.findByUserId(req.user.id)
+      ]);
+
       if (!advantage) {
         res.status(404).json({ error: 'Vantagem não encontrada' });
         return;
@@ -137,35 +138,30 @@ export class AdvantageController {
         return;
       }
 
-      // Buscar aluno pelo user_id
-      const student = await this.studentModel.findByUserId(req.user.id);
       if (!student) {
         res.status(404).json({ error: 'Aluno não encontrado' });
         return;
       }
 
-      // Verificar se já existe resgate desta vantagem para este aluno (pendente ou concluído)
-      const existingRedemption = await this.redemptionModel.findByStudentAndAdvantage(student.id, advantageId);
-      if (existingRedemption && existingRedemption.status !== 'cancelled') {
-        res.status(400).json({ error: 'Esta vantagem já foi resgatada por este aluno' });
-        return;
-      }
-
-      // Verificar saldo do aluno
-      const studentBalance = await this.transactionModel.getBalance(req.user.id);
-      if (studentBalance < advantage.cost_coins) {
-        res.status(400).json({ error: 'Saldo insuficiente para resgatar esta vantagem' });
-        return;
-      }
-
-      // Buscar empresa dona da vantagem
       const company = await this.companyModel.findById(advantage.company_id);
       if (!company) {
         res.status(404).json({ error: 'Empresa parceira não encontrada para esta vantagem' });
         return;
       }
 
-      // Criar transação de resgate (do aluno para a empresa)
+      const existingRedemption = await this.redemptionModel.findByStudentAndAdvantage(student.id, advantageId);
+      if (existingRedemption && existingRedemption.status !== 'cancelled') {
+        res.status(400).json({ error: 'Esta vantagem já foi resgatada por este aluno' });
+        return;
+      }
+
+      const studentBalance = await this.transactionModel.getBalance(req.user.id);
+      if (studentBalance < advantage.cost_coins) {
+        res.status(400).json({ error: 'Saldo insuficiente para resgatar esta vantagem' });
+        return;
+      }
+
+      const redemptionCode = this.generateRedemptionCode();
       const transaction = await this.transactionModel.create({
         from_user_id: req.user.id,
         to_user_id: company.user_id,
@@ -174,13 +170,6 @@ export class AdvantageController {
         transaction_type: 'redemption'
       });
 
-      // Gerar código de resgate
-      const redemptionCode = `RDM-${Date.now().toString(36).toUpperCase()}-${Math.random()
-        .toString(36)
-        .substring(2, 6)
-        .toUpperCase()}`;
-
-      // Registrar resgate
       const redemption = await this.redemptionModel.create({
         student_id: student.id,
         advantage_id: advantage.id,
@@ -189,39 +178,14 @@ export class AdvantageController {
         status: 'pending'
       });
 
-      const studentEmail = req.user.email;
-      const companyEmail = company.email || (company as any).user_email;
-
-      const couponData = {
-        redemptionCode: redemptionCode,
+      await this.sendRedemptionEmails(req.user.email, company.email || (company as any).user_email, {
+        redemptionCode,
         advantageTitle: advantage.title,
         companyName: company.name,
         costCoins: advantage.cost_coins,
         studentName: student.name,
         createdAt: redemption.created_at
-      };
-
-      try {
-        if (studentEmail) {
-          await sendMail({
-            to: studentEmail,
-            subject: '🎉 Cupom de vantagem resgatada - Sistema de Mérito Acadêmico',
-            text: generateCouponEmailText(couponData, true),
-            html: generateCouponEmailHTML(couponData, true)
-          });
-        }
-
-        if (companyEmail) {
-          await sendMail({
-            to: companyEmail,
-            subject: 'Aluno resgatou uma vantagem - Sistema de Mérito Acadêmico',
-            text: generateCouponEmailText(couponData, false),
-            html: generateCouponEmailHTML(couponData, false)
-          });
-        }
-      } catch (mailError) {
-        console.log('mailError', mailError);
-      }
+      });
 
       res.status(201).json({
         message: 'Vantagem resgatada com sucesso',
@@ -241,6 +205,42 @@ export class AdvantageController {
       console.error('Erro ao resgatar vantagem:', error);
       res.status(500).json({ error: 'Erro interno do servidor' });
     }
+  }
+
+
+  private generateRedemptionCode(): string {
+    return `RDM-${Date.now().toString(36).toUpperCase()}-${Math.random()
+      .toString(36)
+      .substring(2, 6)
+      .toUpperCase()}`;
+  }
+
+  private async sendRedemptionEmails(studentEmail: string, companyEmail: string, couponData: any): Promise<void> {
+    const emailPromises = [];
+
+    if (studentEmail) {
+      emailPromises.push(
+        sendMail({
+          to: studentEmail,
+          subject: '🎉 Cupom de vantagem resgatada - Sistema de Mérito Acadêmico',
+          text: generateCouponEmailText(couponData, true),
+          html: generateCouponEmailHTML(couponData, true)
+        }).catch(err => console.log('Erro ao enviar email para aluno:', err))
+      );
+    }
+
+    if (companyEmail) {
+      emailPromises.push(
+        sendMail({
+          to: companyEmail,
+          subject: 'Aluno resgatou uma vantagem - Sistema de Mérito Acadêmico',
+          text: generateCouponEmailText(couponData, false),
+          html: generateCouponEmailHTML(couponData, false)
+        }).catch(err => console.log('Erro ao enviar email para empresa:', err))
+      );
+    }
+
+    await Promise.allSettled(emailPromises);
   }
 
   public async getStudentRedemptions(req: AuthenticatedRequest, res: Response): Promise<void> {
